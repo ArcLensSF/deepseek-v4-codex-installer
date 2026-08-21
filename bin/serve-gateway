@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Runtime launcher installed to <DSV4_ROOT>/bin/serve-gateway by install.sh.
+set -Eeuo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/runtime.env"
+export LITELLM_LOG=ERROR NO_PROXY="127.0.0.1,localhost,::1"
+exec "$DSV4_ROOT/venv/bin/litellm" --config "$DSV4_ROOT/config/litellm.yaml" --host "$DSV4_GATEWAY_HOST" --port 4000

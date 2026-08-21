@@ -1,0 +1,22 @@
+[Unit]
+Description=DeepSeek V4 vLLM backend (loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{DSV4_USER}}
+Group={{DSV4_GROUP}}
+WorkingDirectory={{DSV4_ROOT}}
+Environment=HOME={{DSV4_HOME}}
+Environment=HF_XET_HIGH_PERFORMANCE=1
+ExecStart={{DSV4_ROOT}}/bin/serve-vllm
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=infinity
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

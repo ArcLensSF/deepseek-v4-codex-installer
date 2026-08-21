@@ -1,0 +1,22 @@
+[Unit]
+Description=Authenticated OpenAI Responses gateway for DeepSeek V4
+After=network-online.target dsv4-vllm.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{DSV4_USER}}
+Group={{DSV4_GROUP}}
+WorkingDirectory={{DSV4_ROOT}}
+Environment=HOME={{DSV4_HOME}}
+EnvironmentFile=/etc/dsv4/credentials.env
+ExecStart={{DSV4_ROOT}}/bin/serve-gateway
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=120
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
