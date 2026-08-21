@@ -62,6 +62,8 @@ class InstallerContractTests(unittest.TestCase):
     def test_storage_detection_considers_a_sufficient_root_volume(self):
         self.assertIn("findmnt -rn -o TARGET,FSTYPE", INSTALLER)
         self.assertIn('avail="$(df -PB1 -- "$target"', INSTALLER)
+        self.assertIn("REUSED_MODEL_MIN_FREE_GB", INSTALLER)
+        self.assertIn("Exact model cache found", INSTALLER)
 
     def test_credential_handling(self):
         self.assertIn("openssl rand -hex 32", INSTALLER)

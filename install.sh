@@ -12,6 +12,7 @@ readonly MODEL_REVISION="${DSV4_MODEL_REVISION:-90a72702ddd481285c41265ca163cd15
 readonly MODEL_REF="$MODEL_ID@$MODEL_REVISION"
 readonly MODEL_ALIAS="dsv4-abliterated"
 readonly REQUIRED_FREE_GB="${DSV4_MIN_FREE_GB:-250}"
+readonly REUSED_MODEL_MIN_FREE_GB="${DSV4_REUSED_MODEL_MIN_FREE_GB:-50}"
 readonly VLLM_IMAGE="${DSV4_VLLM_IMAGE:-voipmonitor/vllm@sha256:72c2dd96310b6e9cea5c6e33982586d64a4ca7a9b66921867879309ee1aa58f6}"
 readonly LITELLM_SPEC="${DSV4_LITELLM_SPEC:-litellm[proxy]>=1.80.0,<2}"
 readonly HF_SPEC="${DSV4_HF_SPEC:-huggingface_hub[hf_xet]>=0.34.0,<2}"
@@ -57,6 +58,7 @@ validate_inputs() {
   fi
   [[ "$DSV4_MAX_MODEL_LEN" =~ ^[0-9]+$ ]] && (( DSV4_MAX_MODEL_LEN >= 524288 )) || die "DSV4_MAX_MODEL_LEN must be at least 524288 for this four-GPU profile."
   [[ "$REQUIRED_FREE_GB" =~ ^[0-9]+$ ]] || die "DSV4_MIN_FREE_GB must be an integer."
+  [[ "$REUSED_MODEL_MIN_FREE_GB" =~ ^[0-9]+$ ]] || die "DSV4_REUSED_MODEL_MIN_FREE_GB must be an integer."
 }
 
 install_os_dependencies() {
@@ -123,7 +125,7 @@ largest_local_mount() {
 }
 
 prepare_storage() {
-  local mount free_bytes minimum_bytes group
+  local mount free_bytes minimum_bytes minimum_gb group recorded_model
   if [[ -z "$DSV4_ROOT" ]]; then
     mount="$(largest_local_mount)"
     [[ "$mount" == / ]] && DSV4_ROOT=/opt/dsv4 || DSV4_ROOT="${mount%/}/dsv4"
@@ -133,8 +135,14 @@ prepare_storage() {
   run_root mkdir -p "$DSV4_ROOT"
   run_root chown "$INSTALL_USER:$group" "$DSV4_ROOT"
   free_bytes="$(df -PB1 "$DSV4_ROOT" | awk 'NR==2 {print $4}')"
-  minimum_bytes="$(( REQUIRED_FREE_GB * 1000 * 1000 * 1000 ))"
-  [[ "$free_bytes" =~ ^[0-9]+$ ]] && (( free_bytes >= minimum_bytes )) || die "Need ${REQUIRED_FREE_GB} GB free at $DSV4_ROOT; select a larger local disk with DSV4_ROOT."
+  minimum_gb="$REQUIRED_FREE_GB"
+  recorded_model="$(run_root cat "$DSV4_ROOT/state/model-id" 2>/dev/null || true)"
+  if [[ "$recorded_model" == "$MODEL_REF" ]]; then
+    minimum_gb="$REUSED_MODEL_MIN_FREE_GB"
+    log "Exact model cache found; a rerun requires ${minimum_gb} GB free."
+  fi
+  minimum_bytes="$(( minimum_gb * 1000 * 1000 * 1000 ))"
+  [[ "$free_bytes" =~ ^[0-9]+$ ]] && (( free_bytes >= minimum_bytes )) || die "Need ${minimum_gb} GB free at $DSV4_ROOT; select a larger local disk with DSV4_ROOT."
   DSV4_CACHE="$DSV4_ROOT/cache"
   DSV4_HF_HOME="$DSV4_CACHE/huggingface"
   DSV4_HF_HUB_CACHE="$DSV4_HF_HOME/hub"
