@@ -18,18 +18,21 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("--tlsv1.2", INSTALLER)
 
     def test_exact_checkpoint_and_single_cache_snapshot(self):
-        self.assertIn("amesianx/DeepSeek-V4-Flash-DSpark-Abliterated", INSTALLER)
+        self.assertIn("fraserprice/DeepSeek-V4-Flash-Abliterated-DSpark", INSTALLER)
+        self.assertIn("90a72702ddd481285c41265ca163cd15b8965257", INSTALLER)
         self.assertIn("HF_XET_HIGH_PERFORMANCE=1", INSTALLER)
         self.assertIn("snapshot_download(", INSTALLER)
+        self.assertIn("revision=sys.argv[3]", INSTALLER)
         self.assertIn("HF_HUB_CACHE", INSTALLER)
         self.assertNotIn("local_dir=", INSTALLER)
         self.assertIn('recorded_model="$(<"$DSV4_STATE/model-id"', INSTALLER)
-        self.assertIn('"$recorded_model" == "$MODEL_ID"', INSTALLER)
+        self.assertIn('"$recorded_model" == "$MODEL_REF"', INSTALLER)
 
     def test_vllm_is_loopback_only_and_has_required_flags(self):
         self.assertIn('[[ "$DSV4_VLLM_HOST" == "127.0.0.1" ]]', INSTALLER)
-        self.assertIn("--host \"$DSV4_VLLM_HOST\"", INSTALLER)
+        self.assertIn('-p "$DSV4_VLLM_HOST:8000:8000"', INSTALLER)
         self.assertNotIn("DSV4_VLLM_HOST:-0.0.0.0", INSTALLER)
+        self.assertNotIn("--privileged", INSTALLER)
         for flag in (
             "--tensor-parallel-size \"$GPU_COUNT\"",
             "--kv-cache-dtype fp8",
@@ -38,9 +41,20 @@ class InstallerContractTests(unittest.TestCase):
             "--reasoning-parser deepseek_v4",
             "--enable-auto-tool-choice",
             "--speculative-config '{\"method\":\"dspark\",\"num_speculative_tokens\":5,\"draft_sample_method\":\"probabilistic\"}'",
+            "--attention-backend FLASHINFER_MLA_SPARSE_DSV4",
+            "--kernel-config.moe_backend flashinfer_cutlass",
         ):
             self.assertIn(flag, INSTALLER)
         self.assertIn("native FP8 decoder and FP4 expert formats", INSTALLER)
+
+    def test_four_gpu_docker_blackwell_profile(self):
+        self.assertIn('[[ "$GPU_COUNT" != 4 ]]', INSTALLER)
+        self.assertIn("Using tensor parallelism TP=4.", INSTALLER)
+        self.assertIn("nvidia-container-toolkit", INSTALLER)
+        self.assertIn("nvidia-ctk runtime configure --runtime=docker", INSTALLER)
+        self.assertIn("voipmonitor/vllm@sha256:", INSTALLER)
+        self.assertIn('"data-root": $path', INSTALLER)
+        self.assertIn("DSV4_MAX_MODEL_LEN:-524288", INSTALLER)
 
     def test_credential_handling(self):
         self.assertIn("openssl rand -hex 32", INSTALLER)

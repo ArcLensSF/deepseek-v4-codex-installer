@@ -5,11 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User={{DSV4_USER}}
-Group={{DSV4_GROUP}}
+User=root
+Group=root
 WorkingDirectory={{DSV4_ROOT}}
-Environment=HOME={{DSV4_HOME}}
-Environment=HF_XET_HIGH_PERFORMANCE=1
+Environment=HOME=/root
 ExecStart={{DSV4_ROOT}}/bin/serve-vllm
 Restart=on-failure
 RestartSec=5

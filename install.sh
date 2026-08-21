@@ -6,11 +6,13 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly INSTALLER_VERSION="1.1.0"
-readonly MODEL_ID="amesianx/DeepSeek-V4-Flash-DSpark-Abliterated"
+readonly INSTALLER_VERSION="2.0.0"
+readonly MODEL_ID="fraserprice/DeepSeek-V4-Flash-Abliterated-DSpark"
+readonly MODEL_REVISION="${DSV4_MODEL_REVISION:-90a72702ddd481285c41265ca163cd15b8965257}"
+readonly MODEL_REF="$MODEL_ID@$MODEL_REVISION"
 readonly MODEL_ALIAS="dsv4-abliterated"
 readonly REQUIRED_FREE_GB="${DSV4_MIN_FREE_GB:-250}"
-readonly VLLM_SPEC="${DSV4_VLLM_SPEC:-vllm>=0.27.1,<0.28.0}"
+readonly VLLM_IMAGE="${DSV4_VLLM_IMAGE:-voipmonitor/vllm@sha256:72c2dd96310b6e9cea5c6e33982586d64a4ca7a9b66921867879309ee1aa58f6}"
 readonly LITELLM_SPEC="${DSV4_LITELLM_SPEC:-litellm[proxy]>=1.80.0,<2}"
 readonly HF_SPEC="${DSV4_HF_SPEC:-huggingface_hub[hf_xet]>=0.34.0,<2}"
 
@@ -53,7 +55,7 @@ validate_inputs() {
     [[ "${DSV4_ALLOW_PUBLIC_GATEWAY:-0}" == 1 ]] || die "Refusing a public gateway. Set DSV4_ALLOW_PUBLIC_GATEWAY=1 only for a deliberate, separately firewalled deployment."
     log "WARNING: gateway will be exposed on $DSV4_GATEWAY_HOST. You are responsible for TLS and firewalling."
   fi
-  [[ "$DSV4_MAX_MODEL_LEN" =~ ^[0-9]+$ ]] || die "DSV4_MAX_MODEL_LEN must be an integer."
+  [[ "$DSV4_MAX_MODEL_LEN" =~ ^[0-9]+$ ]] && (( DSV4_MAX_MODEL_LEN >= 524288 )) || die "DSV4_MAX_MODEL_LEN must be at least 524288 for this four-GPU profile."
   [[ "$REQUIRED_FREE_GB" =~ ^[0-9]+$ ]] || die "DSV4_MIN_FREE_GB must be an integer."
 }
 
@@ -67,12 +69,12 @@ install_os_dependencies() {
   case "${ID:-}" in
     ubuntu|debian)
       run_root env DEBIAN_FRONTEND=noninteractive apt-get update -y
-      run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq lsof procps psmisc pciutils numactl build-essential pkg-config libnuma1 openssl
+      run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git gnupg jq lsof procps psmisc pciutils numactl build-essential pkg-config libnuma1 openssl
       ;;
     rhel|rocky|almalinux|fedora)
       local pm=dnf
       command -v dnf >/dev/null 2>&1 || pm=yum
-      run_root "$pm" install -y ca-certificates curl git jq lsof procps-ng psmisc pciutils numactl gcc gcc-c++ make pkgconf-pkg-config numactl-libs openssl
+      run_root "$pm" install -y ca-certificates curl git gnupg2 jq lsof procps-ng psmisc pciutils numactl gcc gcc-c++ make pkgconf-pkg-config numactl-libs openssl
       ;;
     *) die "Unsupported distribution '${ID:-unknown}'. Supported: Ubuntu/Debian, RHEL/Rocky/Alma/Fedora." ;;
   esac
@@ -98,10 +100,10 @@ verify_host_and_detect_gpus() {
       [[ "${DSV4_ALLOW_UNSUPPORTED_GPU:-0}" == 1 ]] || die "Unsupported GPU '$name' (${memory} MiB). Target hardware is RTX PRO 6000 Blackwell 96 GB; use DSV4_ALLOW_UNSUPPORTED_GPU=1 only after validation."
     fi
   done
-  if [[ "$GPU_COUNT" != 2 && "$GPU_COUNT" != 4 && "${DSV4_ALLOW_UNSUPPORTED_GPU:-0}" != 1 ]]; then
-    die "Expected 2 or 4 GPUs; found $GPU_COUNT. Set DSV4_ALLOW_UNSUPPORTED_GPU=1 only for a validated alternative layout."
+  if [[ "$GPU_COUNT" != 4 ]]; then
+    die "This installer profile requires exactly 4 GPUs for TP=4 and a 524,288-token context window; found $GPU_COUNT."
   fi
-  log "Using tensor parallelism TP=$GPU_COUNT."
+  log "Using tensor parallelism TP=4."
 }
 
 largest_local_mount() {
@@ -134,11 +136,70 @@ prepare_storage() {
   DSV4_HF_HUB_CACHE="$DSV4_HF_HOME/hub"
   DSV4_UV_CACHE="$DSV4_CACHE/uv"
   DSV4_TORCH_CACHE="$DSV4_CACHE/torch"
+  DSV4_DOCKER_ROOT="$DSV4_ROOT/docker"
   DSV4_STATE="$DSV4_ROOT/state"
   DSV4_CONFIG="$DSV4_ROOT/config"
   DSV4_BIN="$DSV4_ROOT/bin"
   run_as_install_user mkdir -p "$DSV4_HF_HUB_CACHE" "$DSV4_UV_CACHE" "$DSV4_TORCH_CACHE" "$DSV4_STATE" "$DSV4_CONFIG" "$DSV4_BIN"
+  run_root mkdir -p "$DSV4_DOCKER_ROOT" "$DSV4_TORCH_CACHE/container-jit"
   log "Using $DSV4_ROOT ($(( free_bytes / 1000 / 1000 / 1000 )) GB free)."
+}
+
+configure_docker_data_root() {
+  local current tmp
+  current="$(run_root jq -r '."data-root" // empty' /etc/docker/daemon.json 2>/dev/null || true)"
+  if [[ -n "$current" && "$current" != "$DSV4_DOCKER_ROOT" ]]; then
+    log "Docker already uses $current for image data; preserving that existing Docker setting."
+    return
+  fi
+  tmp="$(mktemp)"
+  if [[ -f /etc/docker/daemon.json ]]; then
+    run_root jq --arg path "$DSV4_DOCKER_ROOT" '. + {"data-root": $path}' /etc/docker/daemon.json > "$tmp"
+  else
+    jq -n --arg path "$DSV4_DOCKER_ROOT" '{"data-root": $path}' > "$tmp"
+  fi
+  run_root install -d -m 755 /etc/docker
+  run_root install -m 600 "$tmp" /etc/docker/daemon.json
+  rm -f "$tmp"
+  run_root systemctl restart docker
+  log "Docker image and container data root: $DSV4_DOCKER_ROOT"
+}
+
+install_container_runtime() {
+  local started installer pm
+  started="$(date +%s)"
+  if ! command -v docker >/dev/null 2>&1; then
+    log "Installing Docker Engine for the Blackwell vLLM container."
+    installer="$(mktemp)"
+    curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error https://get.docker.com -o "$installer"
+    run_root sh "$installer"
+    rm -f "$installer"
+  fi
+  run_root systemctl enable --now docker
+  if ! command -v nvidia-ctk >/dev/null 2>&1; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    log "Installing NVIDIA Container Toolkit."
+    case "${ID:-}" in
+      ubuntu|debian)
+        curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error https://nvidia.github.io/libnvidia-container/gpgkey | run_root gpg --dearmor --yes --output /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | run_root tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+        run_root env DEBIAN_FRONTEND=noninteractive apt-get update -y
+        run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-container-toolkit
+        ;;
+      rhel|rocky|almalinux|fedora)
+        pm=dnf; command -v dnf >/dev/null 2>&1 || pm=yum
+        curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | run_root tee /etc/yum.repos.d/nvidia-container-toolkit.repo >/dev/null
+        run_root "$pm" install -y nvidia-container-toolkit
+        ;;
+      *) die "NVIDIA Container Toolkit installation is unsupported on '${ID:-unknown}'." ;;
+    esac
+  fi
+  run_root nvidia-ctk runtime configure --runtime=docker
+  configure_docker_data_root
+  run_root docker info >/dev/null
+  DEPS_SECONDS="$(( DEPS_SECONDS + $(date +%s) - started ))"
+  log "Docker and NVIDIA Container Toolkit ready in ${DEPS_SECONDS}s total dependency time."
 }
 
 install_uv_and_python() {
@@ -164,30 +225,33 @@ install_uv_and_python() {
 }
 
 install_runtime_stack() {
-  local marker="$DSV4_STATE/runtime-stack-${INSTALLER_VERSION}"
+  local marker="$DSV4_STATE/runtime-stack-${INSTALLER_VERSION}" started
+  started="$(date +%s)"
   cat > "$DSV4_CONFIG/requirements.txt" <<EOF
-$VLLM_SPEC
 $LITELLM_SPEC
 $HF_SPEC
 EOF
-  if [[ -f "$marker" ]] && "$VENV_PYTHON" -c 'import vllm,litellm,huggingface_hub,hf_xet' >/dev/null 2>&1; then
-    log "Reusing the Python 3.12 vLLM/LiteLLM/Hugging Face runtime."
-    return
+  if [[ -f "$marker" ]] && "$VENV_PYTHON" -c 'import litellm,huggingface_hub,hf_xet' >/dev/null 2>&1; then
+    log "Reusing the Python 3.12 LiteLLM/Hugging Face runtime."
+  else
+    log "Installing LiteLLM plus Hugging Face/Xet; vLLM runs in the pinned Blackwell container."
+    run_as_install_user env UV_CACHE_DIR="$DSV4_UV_CACHE" "$UV_BIN" pip install --python "$VENV_PYTHON" --upgrade -r "$DSV4_CONFIG/requirements.txt"
+    run_as_install_user touch "$marker"
   fi
-  log "Installing the vLLM Blackwell serving stack, LiteLLM, and Hugging Face/Xet."
-  run_as_install_user env UV_CACHE_DIR="$DSV4_UV_CACHE" "$UV_BIN" pip install --python "$VENV_PYTHON" --upgrade -r "$DSV4_CONFIG/requirements.txt"
-  run_as_install_user "$VENV_PYTHON" - <<'PY'
-import torch
-assert torch.cuda.is_available(), "PyTorch cannot access CUDA"
-print(f"CUDA runtime {torch.version.cuda}; {torch.cuda.device_count()} GPU(s) visible")
-PY
-  run_as_install_user touch "$marker"
+  if run_root docker image inspect "$VLLM_IMAGE" >/dev/null 2>&1; then
+    log "Reusing pinned Blackwell vLLM image: $VLLM_IMAGE"
+  else
+    log "Pulling the pinned Blackwell/CUDA 13.2 DSpark vLLM image."
+    run_root docker pull "$VLLM_IMAGE"
+  fi
+  run_root docker run --rm --gpus all --entrypoint /bin/sh "$VLLM_IMAGE" -c 'test -c /dev/nvidia0'
+  DEPS_SECONDS="$(( DEPS_SECONDS + $(date +%s) - started ))"
 }
 
 download_model() {
   local started tmp model_path recorded_model
   recorded_model="$(<"$DSV4_STATE/model-id" 2>/dev/null || true)"
-  if [[ -f "$DSV4_STATE/model-path" && "$recorded_model" == "$MODEL_ID" ]]; then
+  if [[ -f "$DSV4_STATE/model-path" && "$recorded_model" == "$MODEL_REF" ]]; then
     model_path="$(<"$DSV4_STATE/model-path")"
     if [[ "$model_path" == "$DSV4_HF_HUB_CACHE"/* && -f "$model_path/config.json" ]]; then
       MODEL_PATH="$model_path"; DOWNLOAD_SECONDS=0
@@ -195,23 +259,23 @@ download_model() {
       return
     fi
   fi
-  if [[ -n "$recorded_model" && "$recorded_model" != "$MODEL_ID" ]]; then
+  if [[ -n "$recorded_model" && "$recorded_model" != "$MODEL_REF" ]]; then
     log "Cached state targets '$recorded_model'; downloading the requested checkpoint instead."
   fi
   started="$(date +%s)"; tmp="$DSV4_STATE/model-path.downloading"
   rm -f "$tmp"
-  log "Downloading $MODEL_ID through Hugging Face Xet (resumable, content-addressed, no duplicate model copy)."
+  log "Downloading $MODEL_REF through Hugging Face Xet (resumable, content-addressed, no duplicate model copy)."
   local -a hf_env=(env "HF_HOME=$DSV4_HF_HOME" "HF_HUB_CACHE=$DSV4_HF_HUB_CACHE" "HF_XET_HIGH_PERFORMANCE=1")
   [[ -n "${HF_TOKEN:-}" ]] && hf_env+=("HF_TOKEN=$HF_TOKEN")
-  run_as_install_user "${hf_env[@]}" "$VENV_PYTHON" - "$MODEL_ID" "$DSV4_HF_HUB_CACHE" > "$tmp" <<'PY'
+  run_as_install_user "${hf_env[@]}" "$VENV_PYTHON" - "$MODEL_ID" "$DSV4_HF_HUB_CACHE" "$MODEL_REVISION" > "$tmp" <<'PY'
 import sys
 from huggingface_hub import snapshot_download
-print(snapshot_download(repo_id=sys.argv[1], repo_type="model", cache_dir=sys.argv[2]))
+print(snapshot_download(repo_id=sys.argv[1], repo_type="model", cache_dir=sys.argv[2], revision=sys.argv[3]))
 PY
   model_path="$(tail -n1 "$tmp")"
   [[ "$model_path" == "$DSV4_HF_HUB_CACHE"/* && -f "$model_path/config.json" ]] || die "The Hugging Face download did not produce a valid model snapshot."
   printf '%s\n' "$model_path" > "$DSV4_STATE/model-path"
-  printf '%s\n' "$MODEL_ID" > "$DSV4_STATE/model-id"
+  printf '%s\n' "$MODEL_REF" > "$DSV4_STATE/model-id"
   rm -f "$tmp"; MODEL_PATH="$model_path"
   DOWNLOAD_SECONDS="$(( $(date +%s) - started ))"
   log "Model download completed in ${DOWNLOAD_SECONDS}s."
@@ -236,6 +300,8 @@ DSV4_MAX_MODEL_LEN=$(printf '%q' "$DSV4_MAX_MODEL_LEN")
 DSV4_GPU_MEMORY_UTILIZATION=$(printf '%q' "$DSV4_GPU_MEMORY_UTILIZATION")
 HF_HOME=$(printf '%q' "$DSV4_HF_HOME")
 HF_HUB_CACHE=$(printf '%q' "$DSV4_HF_HUB_CACHE")
+DSV4_VLLM_IMAGE=$(printf '%q' "$VLLM_IMAGE")
+DSV4_DOCKER_ROOT=$(printf '%q' "$DSV4_DOCKER_ROOT")
 TORCHINDUCTOR_CACHE_DIR=$(printf '%q' "$DSV4_TORCH_CACHE/inductor")
 TRITON_CACHE_DIR=$(printf '%q' "$DSV4_TORCH_CACHE/triton")
 EOF
@@ -262,18 +328,50 @@ EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/runtime.env"
-export HF_XET_HIGH_PERFORMANCE=1 HF_HOME HF_HUB_CACHE TORCHINDUCTOR_CACHE_DIR TRITON_CACHE_DIR
+relative_model_path="${MODEL_PATH#"$HF_HUB_CACHE"/}"
+[[ "$relative_model_path" != "$MODEL_PATH" ]] || { echo 'dsv4: model path is outside the Hugging Face cache' >&2; exit 1; }
+container_model_path="/hf-hub-cache/$relative_model_path"
 # The DSpark checkpoint owns its native FP8 decoder and FP4 expert formats.
 # Do not add a vLLM weight-quantization override here.
-export VLLM_USE_DEEP_GEMM=1 VLLM_MOE_USE_DEEP_GEMM=1 VLLM_DEEPEPLL_NVFP4_DISPATCH=1 VLLM_USE_FLASHINFER_MOE_FP4=1
-exec "$DSV4_ROOT/venv/bin/vllm" serve "$MODEL_PATH" \
-  --host "$DSV4_VLLM_HOST" --port 8000 --served-model-name "$MODEL_ALIAS" \
-  --tensor-parallel-size "$GPU_COUNT" --enable-expert-parallel \
+docker rm -f dsv4-vllm-worker >/dev/null 2>&1 || true
+exec docker run --rm --name dsv4-vllm-worker --init --shm-size 32g --gpus all \
+  -p "$DSV4_VLLM_HOST:8000:8000" \
+  --mount "type=bind,src=$HF_HUB_CACHE,dst=/hf-hub-cache,readonly" \
+  --mount "type=bind,src=$DSV4_ROOT/cache/torch/container-jit,dst=/cache/jit" \
+  -e HF_HUB_OFFLINE=1 \
+  -e SAFETENSORS_FAST_GPU=1 \
+  -e TORCHINDUCTOR_CACHE_DIR=/cache/jit \
+  -e TRITON_CACHE_DIR=/cache/jit \
+  -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
+  -e CUDA_DEVICE_ORDER=PCI_BUS_ID \
+  -e CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  -e CUTE_DSL_ARCH=sm_120a \
+  -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  -e VLLM_USE_V2_MODEL_RUNNER=1 \
+  -e VLLM_USE_FLASHINFER_SAMPLER=1 \
+  -e VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1 \
+  -e NCCL_IB_DISABLE=1 \
+  -e NCCL_P2P_LEVEL=SYS \
+  -e NCCL_PROTO=LL,LL128,Simple \
+  -e VLLM_ENABLE_PCIE_ALLREDUCE=1 \
+  -e VLLM_PCIE_ALLREDUCE_BACKEND=b12x \
+  -e VLLM_PCIE_ONESHOT_ALLREDUCE_MAX_SIZE=64KB \
+  "$DSV4_VLLM_IMAGE" \
+  /opt/venv/bin/python -m vllm.entrypoints.cli.main serve "$container_model_path" \
+  --host 0.0.0.0 --port 8000 --served-model-name "$MODEL_ALIAS" \
+  --tensor-parallel-size "$GPU_COUNT" \
   --gpu-memory-utilization "$DSV4_GPU_MEMORY_UTILIZATION" --max-model-len "$DSV4_MAX_MODEL_LEN" \
-  --kv-cache-dtype fp8 --block-size 256 --tokenizer-mode deepseek_v4 \
-  --tool-call-parser deepseek_v4 --enable-auto-tool-choice --reasoning-parser deepseek_v4 \
+  --max-num-seqs 64 --max-num-batched-tokens 8192 \
+  --reasoning-parser deepseek_v4 --enable-auto-tool-choice --tool-call-parser deepseek_v4 \
+  --attention-backend FLASHINFER_MLA_SPARSE_DSV4 --kv-cache-dtype fp8 \
   --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic"}' \
-  --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+  --trust-remote-code --tokenizer-mode deepseek_v4 --block-size 256 \
+  --max-cudagraph-capture-size 512 \
+  --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}' \
+  --async-scheduling --enable-chunked-prefill --enable-prefix-caching --enable-flashinfer-autotune \
+  --kernel-config.moe_backend flashinfer_cutlass --disable-custom-all-reduce \
+  --default-chat-template-kwargs.thinking=true \
+  --default-chat-template-kwargs.reasoning_effort=high
 EOF
   cat > "$DSV4_BIN/serve-gateway" <<'EOF'
 #!/usr/bin/env bash
@@ -290,7 +388,8 @@ DSV4_UV_BIN=$(printf '%q' "$UV_BIN")
 DSV4_UV_CACHE=$(printf '%q' "$DSV4_UV_CACHE")
 DSV4_MODEL_ALIAS=$(printf '%q' "$MODEL_ALIAS")
 DSV4_GATEWAY_URL=$(printf '%q' "http://$DSV4_GATEWAY_HOST:4000")
-DSV4_VLLM_SPEC=$(printf '%q' "$VLLM_SPEC")
+DSV4_VLLM_IMAGE=$(printf '%q' "$VLLM_IMAGE")
+DSV4_DOCKER_ROOT=$(printf '%q' "$DSV4_DOCKER_ROOT")
 DSV4_LITELLM_SPEC=$(printf '%q' "$LITELLM_SPEC")
 DSV4_HF_SPEC=$(printf '%q' "$HF_SPEC")
 EOF
@@ -298,8 +397,8 @@ EOF
 }
 
 install_services() {
-  local tmp group
-  tmp="$(mktemp)"; group="$(id -gn "$INSTALL_USER")"
+  local tmp
+  tmp="$(mktemp)"
   cat > "$tmp" <<EOF
 [Unit]
 Description=DeepSeek V4 vLLM backend (loopback only)
@@ -307,11 +406,10 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 Type=simple
-User=$INSTALL_USER
-Group=$group
+User=root
+Group=root
 WorkingDirectory=$DSV4_ROOT
-Environment=HOME=$INSTALL_HOME
-Environment=HF_XET_HIGH_PERFORMANCE=1
+Environment=HOME=/root
 ExecStart=$DSV4_BIN/serve-vllm
 Restart=on-failure
 RestartSec=5
@@ -364,6 +462,18 @@ source "$CONF"
 root() { if [[ "$EUID" -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
 as_service_user() { if [[ "$EUID" -eq 0 && "$DSV4_USER" != root ]]; then sudo -H -u "$DSV4_USER" "$@"; else "$@"; fi; }
 key() { root awk -F= '/^DSV4_API_KEY=/{print $2; exit}' "$CREDS"; }
+cleanup_docker_data_root() {
+  local active tmp
+  [[ -n "${DSV4_DOCKER_ROOT:-}" ]] || return 0
+  [[ -r /etc/docker/daemon.json ]] || return 0
+  active="$(root jq -r '."data-root" // empty' /etc/docker/daemon.json 2>/dev/null || true)"
+  [[ "$active" == "$DSV4_DOCKER_ROOT" ]] || return 0
+  tmp="$(mktemp)"
+  root jq 'del(."data-root")' /etc/docker/daemon.json > "$tmp"
+  root install -m 600 "$tmp" /etc/docker/daemon.json
+  rm -f "$tmp"
+  root systemctl restart docker
+}
 usage() { cat <<'USAGE'
 Usage: dsv4 {start|stop|restart|status|logs [--follow]|credentials|update|uninstall --yes}
 USAGE
@@ -381,14 +491,16 @@ case "${1:-}" in
     ;;
   credentials) printf 'API KEY:\n%s\n\nMODEL:\n%s\n\nLOCAL GATEWAY:\n%s\n' "$(key)" "$DSV4_MODEL_ALIAS" "$DSV4_GATEWAY_URL" ;;
   update)
-    echo 'Updating Python serving packages; model cache and API key are retained.'
-    as_service_user env UV_CACHE_DIR="$DSV4_UV_CACHE" "$DSV4_UV_BIN" pip install --python "$DSV4_ROOT/venv/bin/python" --upgrade "$DSV4_VLLM_SPEC" "$DSV4_LITELLM_SPEC" "$DSV4_HF_SPEC"
+    echo 'Updating LiteLLM/Hugging Face packages and re-pulling the pinned vLLM image; model cache and API key are retained.'
+    as_service_user env UV_CACHE_DIR="$DSV4_UV_CACHE" "$DSV4_UV_BIN" pip install --python "$DSV4_ROOT/venv/bin/python" --upgrade "$DSV4_LITELLM_SPEC" "$DSV4_HF_SPEC"
+    root docker pull "$DSV4_VLLM_IMAGE"
     root systemctl restart dsv4-vllm.service dsv4-gateway.service
     ;;
   uninstall)
     [[ "${2:-}" == --yes ]] || { echo "dsv4: this permanently removes $DSV4_ROOT and the model. Re-run: dsv4 uninstall --yes" >&2; exit 1; }
     [[ "$DSV4_ROOT" == /* && "$DSV4_ROOT" != / && "$DSV4_ROOT" != /opt ]] || { echo 'dsv4: refusing unsafe removal target' >&2; exit 1; }
     root systemctl disable --now dsv4-gateway.service dsv4-vllm.service || true
+    cleanup_docker_data_root
     root rm -f /etc/systemd/system/dsv4-vllm.service /etc/systemd/system/dsv4-gateway.service /etc/dsv4/dsv4.conf /etc/dsv4/credentials.env
     root systemctl daemon-reload
     root rm -rf -- "$DSV4_ROOT"
@@ -496,6 +608,7 @@ main() {
   install_os_dependencies
   verify_host_and_detect_gpus
   prepare_storage
+  install_container_runtime
   install_uv_and_python
   install_runtime_stack
   download_model

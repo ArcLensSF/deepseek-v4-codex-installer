@@ -1,6 +1,6 @@
 # DeepSeek V4 private server installer
 
-This repository is a public, one-command installer for a **private self-hosted model server**. It deploys [`amesianx/DeepSeek-V4-Flash-DSpark-Abliterated`](https://huggingface.co/amesianx/DeepSeek-V4-Flash-DSpark-Abliterated) for trusted users running Codex CLI; it does not create a public API, accounts, billing, a dashboard, or SaaS infrastructure.
+This repository is a public, one-command installer for a **private self-hosted model server**. It deploys [`fraserprice/DeepSeek-V4-Flash-Abliterated-DSpark`](https://huggingface.co/fraserprice/DeepSeek-V4-Flash-Abliterated-DSpark) for trusted users running Codex CLI; it does not create a public API, accounts, billing, a dashboard, or SaaS infrastructure.
 
 ## Security boundary
 
@@ -13,23 +13,23 @@ Both trusted users connect through their own SSH tunnel. The unauthenticated vLL
 
 ## Install
 
-Use a fresh CUDA-enabled Linux image where `nvidia-smi` works. The primary supported configurations are 2× or 4× RTX PRO 6000 Blackwell 96 GB GPUs. Ubuntu 22.04/24.04, Debian 12, RHEL-compatible distributions, and Fedora are supported.
+Use a fresh CUDA-enabled Linux image where `nvidia-smi` works. This profile requires **4× RTX PRO 6000 Blackwell 96 GB** GPUs, uses TP=4, and reserves a 524,288-token context window. Ubuntu 22.04/24.04, Debian 12, RHEL-compatible distributions, and Fedora are supported.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ArcLensSF/deepseek-v4-codex-installer/main/install.sh | bash
 ```
 
-The installer detects GPUs and storage; installs Linux dependencies, uv, Python 3.12, vLLM, LiteLLM, Hugging Face, and Xet; and requires 250 GB free by default. It uses `HF_XET_HIGH_PERFORMANCE=1` and a content-addressed Hugging Face snapshot, so it does not create a second ~167 GB model copy. Interrupted downloads, caches, configuration, virtual environment, compiled kernels, and the API key are reused on rerun.
+The installer detects GPUs and storage; installs Linux dependencies, Docker Engine, NVIDIA Container Toolkit, uv, Python 3.12, LiteLLM, Hugging Face, and Xet. It pulls the checkpoint's pinned Blackwell/CUDA 13.2 DSpark vLLM image and keeps its Docker image data plus JIT cache on the selected local disk. It requires 250 GB free by default. `HF_XET_HIGH_PERFORMANCE=1` and a content-addressed Hugging Face snapshot avoid a second ~167 GB model copy. Interrupted downloads, caches, configuration, virtual environment, compiled kernels, and the API key are reused on rerun.
 
 ```bash
 # Select a known ephemeral NVMe mount.
 curl -fsSL https://raw.githubusercontent.com/ArcLensSF/deepseek-v4-codex-installer/main/install.sh | DSV4_ROOT=/mnt/ephemeral/dsv4 bash
 
-# Deliberate storage/context overrides.
-curl -fsSL https://raw.githubusercontent.com/ArcLensSF/deepseek-v4-codex-installer/main/install.sh | DSV4_MIN_FREE_GB=300 DSV4_MAX_MODEL_LEN=262144 bash
+# The model revision is pinned for reproducibility. Override only deliberately.
+curl -fsSL https://raw.githubusercontent.com/ArcLensSF/deepseek-v4-codex-installer/main/install.sh | DSV4_MODEL_REVISION=90a72702ddd481285c41265ca163cd15b8965257 bash
 ```
 
-The server uses TP=2 on 2 GPUs and TP=4 on 4 GPUs, FP8 KV cache, DeepSeek V4 reasoning/tool parsing, expert parallelism, and a 524,288-token context window. The DSpark checkpoint's native FP8 decoder and FP4 expert weights are used as shipped: the installer does not re-quantize them. Its embedded DSpark draft head is enabled with the checkpoint-native five-token speculative-decode block. It prints download, runtime initialization, model-load-to-health, JIT/kernel warm-up, and overall readiness timing.
+The server uses TP=4, FP8 KV cache, DeepSeek V4 reasoning/tool parsing, and a 524,288-token context window. The DSpark checkpoint's native FP8 decoder and FP4 expert weights are used as shipped: the installer does not re-quantize them. Its embedded DSpark draft head is enabled with its checkpoint-native five-token speculative-decode block. The backend container listens on `0.0.0.0` only inside Docker and is published by Docker exclusively as `127.0.0.1:8000` on the host. It prints download, runtime initialization, model-load-to-health, JIT/kernel warm-up, and overall readiness timing.
 
 ## Connect Codex CLI from a laptop
 
@@ -65,13 +65,13 @@ dsv4 update
 dsv4 uninstall --yes
 ```
 
-`dsv4 update` refreshes the installed Python serving packages and restarts the server without removing the model cache or API key. `dsv4 uninstall --yes` is explicit because it removes both credentials and the cached model.
+`dsv4 update` refreshes LiteLLM/Hugging Face packages, re-pulls the pinned vLLM image, and restarts the server without removing the model cache or API key. `dsv4 uninstall --yes` is explicit because it removes both credentials and the cached model.
 
-The selected data root contains the Hugging Face/Xet cache, uv cache, Torch/Triton compilation cache, Python 3.12 environment, runtime config, and timing state. The only secret is `/etc/dsv4/credentials.env`, owned by root with mode `600`.
+The selected data root contains the Hugging Face/Xet cache, Docker image storage, uv cache, Torch/Triton compilation cache, Python 3.12 environment, runtime config, and timing state. The only secret is `/etc/dsv4/credentials.env`, owned by root with mode `600`.
 
 ## Safety and operations
 
-NVIDIA drivers are a prerequisite supplied by the GPU image. The installer only installs user-space dependencies and refuses to download the model if `nvidia-smi` is unavailable.
+NVIDIA drivers are a prerequisite supplied by the GPU image. The installer installs Docker and NVIDIA Container Toolkit, but refuses to proceed if `nvidia-smi` is unavailable or if the server does not have exactly four supported GPUs.
 
 The checkpoint is an abliterated derivative with intentionally modified refusal behavior. Restrict it to trusted users, comply with its Hugging Face license, and do not use it for sensitive or safety-critical decisions.
 

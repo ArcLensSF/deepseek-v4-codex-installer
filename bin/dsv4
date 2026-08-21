@@ -10,6 +10,18 @@ source "$CONF"
 root() { if [[ "$EUID" -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
 as_service_user() { if [[ "$EUID" -eq 0 && "$DSV4_USER" != root ]]; then sudo -H -u "$DSV4_USER" "$@"; else "$@"; fi; }
 key() { root awk -F= '/^DSV4_API_KEY=/{print $2; exit}' "$CREDS"; }
+cleanup_docker_data_root() {
+  local active tmp
+  [[ -n "${DSV4_DOCKER_ROOT:-}" ]] || return 0
+  [[ -r /etc/docker/daemon.json ]] || return 0
+  active="$(root jq -r '."data-root" // empty' /etc/docker/daemon.json 2>/dev/null || true)"
+  [[ "$active" == "$DSV4_DOCKER_ROOT" ]] || return 0
+  tmp="$(mktemp)"
+  root jq 'del(."data-root")' /etc/docker/daemon.json > "$tmp"
+  root install -m 600 "$tmp" /etc/docker/daemon.json
+  rm -f "$tmp"
+  root systemctl restart docker
+}
 usage() { echo 'Usage: dsv4 {start|stop|restart|status|logs [--follow]|credentials|update|uninstall --yes}'; }
 
 case "${1:-}" in
@@ -25,14 +37,16 @@ case "${1:-}" in
     ;;
   credentials) printf 'API KEY:\n%s\n\nMODEL:\n%s\n\nLOCAL GATEWAY:\n%s\n' "$(key)" "$DSV4_MODEL_ALIAS" "$DSV4_GATEWAY_URL" ;;
   update)
-    echo 'Updating Python serving packages; model cache and API key are retained.'
-    as_service_user env UV_CACHE_DIR="$DSV4_UV_CACHE" "$DSV4_UV_BIN" pip install --python "$DSV4_ROOT/venv/bin/python" --upgrade "$DSV4_VLLM_SPEC" "$DSV4_LITELLM_SPEC" "$DSV4_HF_SPEC"
+    echo 'Updating LiteLLM/Hugging Face packages and re-pulling the pinned vLLM image; model cache and API key are retained.'
+    as_service_user env UV_CACHE_DIR="$DSV4_UV_CACHE" "$DSV4_UV_BIN" pip install --python "$DSV4_ROOT/venv/bin/python" --upgrade "$DSV4_LITELLM_SPEC" "$DSV4_HF_SPEC"
+    root docker pull "$DSV4_VLLM_IMAGE"
     root systemctl restart dsv4-vllm.service dsv4-gateway.service
     ;;
   uninstall)
     [[ "${2:-}" == --yes ]] || { echo "dsv4: this permanently removes $DSV4_ROOT and the model. Re-run: dsv4 uninstall --yes" >&2; exit 1; }
     [[ "$DSV4_ROOT" == /* && "$DSV4_ROOT" != / && "$DSV4_ROOT" != /opt ]] || { echo 'dsv4: refusing unsafe removal target' >&2; exit 1; }
     root systemctl disable --now dsv4-gateway.service dsv4-vllm.service || true
+    cleanup_docker_data_root
     root rm -f /etc/systemd/system/dsv4-vllm.service /etc/systemd/system/dsv4-gateway.service /etc/dsv4/dsv4.conf /etc/dsv4/credentials.env
     root systemctl daemon-reload
     root rm -rf -- "$DSV4_ROOT"
