@@ -81,6 +81,7 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('base_url = "http://127.0.0.1:4000/v1"', PROFILE)
         self.assertNotIn("ANTHROPIC_", INSTALLER)
         self.assertNotIn("claude", INSTALLER.lower())
+        self.assertIn("fastapi<0.140", INSTALLER)
 
     def test_management_commands_and_safe_uninstall(self):
         for command in ("start", "stop", "restart", "status", "logs", "credentials", "update", "uninstall"):

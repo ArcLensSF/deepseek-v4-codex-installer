@@ -270,6 +270,8 @@ install_runtime_stack() {
   cat > "$DSV4_CONFIG/requirements.txt" <<EOF
 $LITELLM_SPEC
 $HF_SPEC
+# LiteLLM 1.97 imports FastAPI's get_flat_dependant, removed in FastAPI 0.140.
+fastapi<0.140
 EOF
   if [[ -f "$marker" ]] && "$VENV_PYTHON" -c 'import litellm,huggingface_hub,hf_xet' >/dev/null 2>&1; then
     log "Reusing the Python 3.12 LiteLLM/Hugging Face runtime."
