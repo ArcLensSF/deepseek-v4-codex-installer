@@ -169,6 +169,32 @@ configure_docker_data_root() {
   log "Docker image and container data root: $DSV4_DOCKER_ROOT"
 }
 
+configure_containerd_data_root() {
+  local config target tmp current
+  command -v containerd >/dev/null 2>&1 || die "containerd is required by Docker Engine."
+  config=/etc/containerd/config.toml
+  target="$DSV4_ROOT/containerd"
+  run_root install -d -m 755 /etc/containerd "$target"
+  current="$(run_root awk -F'"' '/^root = / {print $2; exit}' "$config" 2>/dev/null || true)"
+  if [[ -n "$current" && "$current" != /var/lib/containerd && "$current" != "$target" ]]; then
+    die "containerd already uses $current; refusing to replace its existing storage root."
+  fi
+  tmp="$(mktemp)"
+  if [[ -f "$config" ]]; then
+    run_root sed -E "s|^root = \".*\"|root = \"$target\"|" "$config" > "$tmp"
+    if ! grep -q '^root = ' "$tmp"; then
+      { printf 'root = "%s"\n' "$target"; cat "$tmp"; } > "${tmp}.new"
+      mv "${tmp}.new" "$tmp"
+    fi
+  else
+    containerd config default | sed -E "s|^root = \".*\"|root = \"$target\"|" > "$tmp"
+  fi
+  run_root install -m 644 "$tmp" "$config"
+  rm -f "$tmp"
+  run_root systemctl restart containerd
+  log "containerd content and snapshot root: $target"
+}
+
 install_container_runtime() {
   local started installer pm
   started="$(date +%s)"
@@ -200,6 +226,7 @@ install_container_runtime() {
     esac
   fi
   run_root nvidia-ctk runtime configure --runtime=docker
+  configure_containerd_data_root
   configure_docker_data_root
   run_root docker info >/dev/null
   DEPS_SECONDS="$(( DEPS_SECONDS + $(date +%s) - started ))"

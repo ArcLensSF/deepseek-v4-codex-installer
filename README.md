@@ -19,7 +19,7 @@ Use a fresh CUDA-enabled Linux image where `nvidia-smi` works. This profile requ
 curl -fsSL https://raw.githubusercontent.com/ArcLensSF/deepseek-v4-codex-installer/main/install.sh | bash
 ```
 
-The installer detects GPUs and storage; installs Linux dependencies, Docker Engine, NVIDIA Container Toolkit, uv, Python 3.12, LiteLLM, Hugging Face, and Xet. It pulls the checkpoint's pinned Blackwell/CUDA 13.2 DSpark vLLM image and keeps its Docker image data plus JIT cache on the selected local disk. It requires 250 GB free by default. `HF_XET_HIGH_PERFORMANCE=1` and a content-addressed Hugging Face snapshot avoid a second ~167 GB model copy. Interrupted downloads, caches, configuration, virtual environment, compiled kernels, and the API key are reused on rerun.
+The installer detects GPUs and storage; installs Linux dependencies, Docker Engine, NVIDIA Container Toolkit, uv, Python 3.12, LiteLLM, Hugging Face, and Xet. It pulls the checkpoint's pinned Blackwell/CUDA 13.2 DSpark vLLM image and keeps Docker, containerd image/snapshot data, and the JIT cache on the selected local disk. It requires 250 GB free by default. `HF_XET_HIGH_PERFORMANCE=1` and a content-addressed Hugging Face snapshot avoid a second ~167 GB model copy. Interrupted downloads, caches, configuration, virtual environment, compiled kernels, and the API key are reused on rerun.
 
 ```bash
 # Select a known ephemeral NVMe mount.

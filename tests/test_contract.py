@@ -54,6 +54,8 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("nvidia-ctk runtime configure --runtime=docker", INSTALLER)
         self.assertIn("voipmonitor/vllm@sha256:", INSTALLER)
         self.assertIn('"data-root": $path', INSTALLER)
+        self.assertIn("configure_containerd_data_root", INSTALLER)
+        self.assertIn("containerd content and snapshot root", INSTALLER)
         self.assertIn("DSV4_MAX_MODEL_LEN:-524288", INSTALLER)
 
     def test_storage_detection_considers_a_sufficient_root_volume(self):
