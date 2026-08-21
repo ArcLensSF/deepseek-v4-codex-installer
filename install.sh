@@ -6,11 +6,11 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly INSTALLER_VERSION="1.0.0"
-readonly MODEL_ID="sakamakismile/DeepSeek-V4-Flash-0731-Abliterated-NVFP4"
+readonly INSTALLER_VERSION="1.1.0"
+readonly MODEL_ID="amesianx/DeepSeek-V4-Flash-DSpark-Abliterated"
 readonly MODEL_ALIAS="dsv4-abliterated"
 readonly REQUIRED_FREE_GB="${DSV4_MIN_FREE_GB:-250}"
-readonly VLLM_SPEC="${DSV4_VLLM_SPEC:-vllm>=0.26.0,<0.27.0}"
+readonly VLLM_SPEC="${DSV4_VLLM_SPEC:-vllm>=0.27.1,<0.28.0}"
 readonly LITELLM_SPEC="${DSV4_LITELLM_SPEC:-litellm[proxy]>=1.80.0,<2}"
 readonly HF_SPEC="${DSV4_HF_SPEC:-huggingface_hub[hf_xet]>=0.34.0,<2}"
 
@@ -101,6 +101,7 @@ verify_host_and_detect_gpus() {
   if [[ "$GPU_COUNT" != 2 && "$GPU_COUNT" != 4 && "${DSV4_ALLOW_UNSUPPORTED_GPU:-0}" != 1 ]]; then
     die "Expected 2 or 4 GPUs; found $GPU_COUNT. Set DSV4_ALLOW_UNSUPPORTED_GPU=1 only for a validated alternative layout."
   fi
+  log "Using tensor parallelism TP=$GPU_COUNT."
 }
 
 largest_local_mount() {
@@ -184,14 +185,18 @@ PY
 }
 
 download_model() {
-  local started tmp model_path
-  if [[ -f "$DSV4_STATE/model-path" ]]; then
+  local started tmp model_path recorded_model
+  recorded_model="$(<"$DSV4_STATE/model-id" 2>/dev/null || true)"
+  if [[ -f "$DSV4_STATE/model-path" && "$recorded_model" == "$MODEL_ID" ]]; then
     model_path="$(<"$DSV4_STATE/model-path")"
     if [[ "$model_path" == "$DSV4_HF_HUB_CACHE"/* && -f "$model_path/config.json" ]]; then
       MODEL_PATH="$model_path"; DOWNLOAD_SECONDS=0
       log "Reusing model snapshot: $MODEL_PATH"
       return
     fi
+  fi
+  if [[ -n "$recorded_model" && "$recorded_model" != "$MODEL_ID" ]]; then
+    log "Cached state targets '$recorded_model'; downloading the requested checkpoint instead."
   fi
   started="$(date +%s)"; tmp="$DSV4_STATE/model-path.downloading"
   rm -f "$tmp"
@@ -206,6 +211,7 @@ PY
   model_path="$(tail -n1 "$tmp")"
   [[ "$model_path" == "$DSV4_HF_HUB_CACHE"/* && -f "$model_path/config.json" ]] || die "The Hugging Face download did not produce a valid model snapshot."
   printf '%s\n' "$model_path" > "$DSV4_STATE/model-path"
+  printf '%s\n' "$MODEL_ID" > "$DSV4_STATE/model-id"
   rm -f "$tmp"; MODEL_PATH="$model_path"
   DOWNLOAD_SECONDS="$(( $(date +%s) - started ))"
   log "Model download completed in ${DOWNLOAD_SECONDS}s."
@@ -257,6 +263,8 @@ EOF
 set -Eeuo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/runtime.env"
 export HF_XET_HIGH_PERFORMANCE=1 HF_HOME HF_HUB_CACHE TORCHINDUCTOR_CACHE_DIR TRITON_CACHE_DIR
+# The DSpark checkpoint owns its native FP8 decoder and FP4 expert formats.
+# Do not add a vLLM weight-quantization override here.
 export VLLM_USE_DEEP_GEMM=1 VLLM_MOE_USE_DEEP_GEMM=1 VLLM_DEEPEPLL_NVFP4_DISPATCH=1 VLLM_USE_FLASHINFER_MOE_FP4=1
 exec "$DSV4_ROOT/venv/bin/vllm" serve "$MODEL_PATH" \
   --host "$DSV4_VLLM_HOST" --port 8000 --served-model-name "$MODEL_ALIAS" \
@@ -264,6 +272,7 @@ exec "$DSV4_ROOT/venv/bin/vllm" serve "$MODEL_PATH" \
   --gpu-memory-utilization "$DSV4_GPU_MEMORY_UTILIZATION" --max-model-len "$DSV4_MAX_MODEL_LEN" \
   --kv-cache-dtype fp8 --block-size 256 --tokenizer-mode deepseek_v4 \
   --tool-call-parser deepseek_v4 --enable-auto-tool-choice --reasoning-parser deepseek_v4 \
+  --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic"}' \
   --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
 EOF
   cat > "$DSV4_BIN/serve-gateway" <<'EOF'

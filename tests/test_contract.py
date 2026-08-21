@@ -18,11 +18,13 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("--tlsv1.2", INSTALLER)
 
     def test_exact_checkpoint_and_single_cache_snapshot(self):
-        self.assertIn("sakamakismile/DeepSeek-V4-Flash-0731-Abliterated-NVFP4", INSTALLER)
+        self.assertIn("amesianx/DeepSeek-V4-Flash-DSpark-Abliterated", INSTALLER)
         self.assertIn("HF_XET_HIGH_PERFORMANCE=1", INSTALLER)
         self.assertIn("snapshot_download(", INSTALLER)
         self.assertIn("HF_HUB_CACHE", INSTALLER)
         self.assertNotIn("local_dir=", INSTALLER)
+        self.assertIn('recorded_model="$(<"$DSV4_STATE/model-id"', INSTALLER)
+        self.assertIn('"$recorded_model" == "$MODEL_ID"', INSTALLER)
 
     def test_vllm_is_loopback_only_and_has_required_flags(self):
         self.assertIn('[[ "$DSV4_VLLM_HOST" == "127.0.0.1" ]]', INSTALLER)
@@ -35,8 +37,10 @@ class InstallerContractTests(unittest.TestCase):
             "--tool-call-parser deepseek_v4",
             "--reasoning-parser deepseek_v4",
             "--enable-auto-tool-choice",
+            "--speculative-config '{\"method\":\"dspark\",\"num_speculative_tokens\":5,\"draft_sample_method\":\"probabilistic\"}'",
         ):
             self.assertIn(flag, INSTALLER)
+        self.assertIn("native FP8 decoder and FP4 expert formats", INSTALLER)
 
     def test_credential_handling(self):
         self.assertIn("openssl rand -hex 32", INSTALLER)

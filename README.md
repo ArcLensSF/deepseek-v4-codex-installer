@@ -1,6 +1,6 @@
 # DeepSeek V4 private server installer
 
-This repository is a public, one-command installer for a **private self-hosted model server**. It deploys `sakamakismile/DeepSeek-V4-Flash-0731-Abliterated-NVFP4` for trusted users running Codex CLI; it does not create a public API, accounts, billing, a dashboard, or SaaS infrastructure.
+This repository is a public, one-command installer for a **private self-hosted model server**. It deploys [`amesianx/DeepSeek-V4-Flash-DSpark-Abliterated`](https://huggingface.co/amesianx/DeepSeek-V4-Flash-DSpark-Abliterated) for trusted users running Codex CLI; it does not create a public API, accounts, billing, a dashboard, or SaaS infrastructure.
 
 ## Security boundary
 
@@ -15,23 +15,21 @@ Both trusted users connect through their own SSH tunnel. The unauthenticated vLL
 
 Use a fresh CUDA-enabled Linux image where `nvidia-smi` works. The primary supported configurations are 2× or 4× RTX PRO 6000 Blackwell 96 GB GPUs. Ubuntu 22.04/24.04, Debian 12, RHEL-compatible distributions, and Fedora are supported.
 
-After publishing, replace `OWNER/REPO` with the real GitHub path:
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ArcLensSF/deepseek-v4-codex-installer/main/install.sh | bash
 ```
 
-The installer detects GPUs and storage; installs Linux dependencies, uv, Python 3.12, vLLM, LiteLLM, Hugging Face, and Xet; and requires 250 GB free by default. It uses `HF_XET_HIGH_PERFORMANCE=1` and a content-addressed Hugging Face snapshot, so it does not create a second ~176 GB model copy. Interrupted downloads, caches, configuration, virtual environment, compiled kernels, and the API key are reused on rerun.
+The installer detects GPUs and storage; installs Linux dependencies, uv, Python 3.12, vLLM, LiteLLM, Hugging Face, and Xet; and requires 250 GB free by default. It uses `HF_XET_HIGH_PERFORMANCE=1` and a content-addressed Hugging Face snapshot, so it does not create a second ~167 GB model copy. Interrupted downloads, caches, configuration, virtual environment, compiled kernels, and the API key are reused on rerun.
 
 ```bash
 # Select a known ephemeral NVMe mount.
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | DSV4_ROOT=/mnt/ephemeral/dsv4 bash
+curl -fsSL https://raw.githubusercontent.com/ArcLensSF/deepseek-v4-codex-installer/main/install.sh | DSV4_ROOT=/mnt/ephemeral/dsv4 bash
 
 # Deliberate storage/context overrides.
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | DSV4_MIN_FREE_GB=300 DSV4_MAX_MODEL_LEN=262144 bash
+curl -fsSL https://raw.githubusercontent.com/ArcLensSF/deepseek-v4-codex-installer/main/install.sh | DSV4_MIN_FREE_GB=300 DSV4_MAX_MODEL_LEN=262144 bash
 ```
 
-The server uses tensor parallelism equal to detected GPU count, FP8 KV cache, DeepSeek V4 reasoning/tool parsing, expert parallelism, a 524,288-token context window, and Blackwell-oriented serving settings. It prints download, runtime initialization, model-load-to-health, JIT/kernel warm-up, and overall readiness timing.
+The server uses TP=2 on 2 GPUs and TP=4 on 4 GPUs, FP8 KV cache, DeepSeek V4 reasoning/tool parsing, expert parallelism, and a 524,288-token context window. The DSpark checkpoint's native FP8 decoder and FP4 expert weights are used as shipped: the installer does not re-quantize them. Its embedded DSpark draft head is enabled with the checkpoint-native five-token speculative-decode block. It prints download, runtime initialization, model-load-to-health, JIT/kernel warm-up, and overall readiness timing.
 
 ## Connect Codex CLI from a laptop
 
