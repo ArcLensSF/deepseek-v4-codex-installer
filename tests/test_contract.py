@@ -56,6 +56,10 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('"data-root": $path', INSTALLER)
         self.assertIn("DSV4_MAX_MODEL_LEN:-524288", INSTALLER)
 
+    def test_storage_detection_considers_a_sufficient_root_volume(self):
+        self.assertIn("findmnt -rn -o TARGET,FSTYPE", INSTALLER)
+        self.assertIn('avail="$(df -PB1 -- "$target"', INSTALLER)
+
     def test_credential_handling(self):
         self.assertIn("openssl rand -hex 32", INSTALLER)
         self.assertIn("sk-dsv4-", INSTALLER)

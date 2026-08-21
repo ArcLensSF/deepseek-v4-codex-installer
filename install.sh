@@ -108,12 +108,16 @@ verify_host_and_detect_gpus() {
 
 largest_local_mount() {
   local target type avail best_target="" best_avail=0
-  while read -r target type avail; do
-    [[ -n "$target" && "$avail" =~ ^[0-9]+$ ]] || continue
+  while read -r target type; do
+    [[ -n "$target" && -n "$type" ]] || continue
     case "$type" in tmpfs|devtmpfs|squashfs|overlay|proc|sysfs|cgroup*|nfs*|cifs|smb*) continue;; esac
     [[ "$target" != /boot && "$target" != /boot/efi ]] || continue
+    # findmnt's AVAIL column may be human-readable even with --bytes. Ask df
+    # for byte-accurate space instead, so the main OS volume is considered.
+    avail="$(df -PB1 -- "$target" 2>/dev/null | awk 'NR==2 {print $4}')"
+    [[ "$avail" =~ ^[0-9]+$ ]] || continue
     if (( avail > best_avail )); then best_target="$target"; best_avail="$avail"; fi
-  done < <(findmnt -rnb -o TARGET,FSTYPE,AVAIL 2>/dev/null || true)
+  done < <(findmnt -rn -o TARGET,FSTYPE 2>/dev/null || true)
   [[ -n "$best_target" ]] || die "Could not find a suitable local mounted disk. Set DSV4_ROOT explicitly."
   printf '%s\n' "$best_target"
 }
