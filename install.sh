@@ -429,7 +429,8 @@ EOF
 }
 
 install_services() {
-  local tmp
+  local tmp group
+  group="$(id -gn "$INSTALL_USER")"
   tmp="$(mktemp)"
   cat > "$tmp" <<EOF
 [Unit]

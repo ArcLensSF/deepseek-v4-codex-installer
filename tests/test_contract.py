@@ -91,6 +91,7 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=/etc/dsv4/credentials.env", GATEWAY_TEMPLATE)
         self.assertIn("NoNewPrivileges=true", VLLM_TEMPLATE)
         self.assertIn("NoNewPrivileges=true", GATEWAY_TEMPLATE)
+        self.assertIn('group="$(id -gn "$INSTALL_USER")"', INSTALLER)
 
 
 if __name__ == "__main__":
