@@ -56,6 +56,7 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('"data-root": $path', INSTALLER)
         self.assertIn("configure_containerd_data_root", INSTALLER)
         self.assertIn("containerd content and snapshot root", INSTALLER)
+        self.assertIn("Could not configure containerd", INSTALLER)
         self.assertIn("DSV4_MAX_MODEL_LEN:-524288", INSTALLER)
 
     def test_storage_detection_considers_a_sufficient_root_volume(self):
