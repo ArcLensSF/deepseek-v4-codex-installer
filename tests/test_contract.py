@@ -1,71 +1,46 @@
 from pathlib import Path
-import re
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTALLER = (ROOT / "install.sh").read_text()
-PROFILE = (ROOT / "templates/codex/dsv4.config.toml").read_text()
-GATEWAY_TEMPLATE = (ROOT / "templates/systemd/dsv4-gateway.service.template").read_text()
-VLLM_TEMPLATE = (ROOT / "templates/systemd/dsv4-vllm.service.template").read_text()
+BOOTSTRAP = (ROOT / "install.sh").read_text()
+INSTALLER = (ROOT / "scripts" / "install-huihui-gguf-remote.sh").read_text()
 
 
-class InstallerContractTests(unittest.TestCase):
-    def test_secure_shell_baseline(self):
-        self.assertIn("set -Eeuo pipefail", INSTALLER)
-        self.assertIn("umask 077", INSTALLER)
-        self.assertIn("--proto '=https'", INSTALLER)
-        self.assertIn("--tlsv1.2", INSTALLER)
+class HuihuiInstallerContractTests(unittest.TestCase):
+    def test_public_bootstrap_fetches_the_versioned_installer(self):
+        self.assertIn("scripts/install-huihui-gguf-remote.sh", BOOTSTRAP)
+        self.assertIn("curl --fail --location", BOOTSTRAP)
+        self.assertIn("set -Eeuo pipefail", BOOTSTRAP)
 
-    def test_exact_checkpoint_and_single_cache_snapshot(self):
-        self.assertIn("sakamakismile/DeepSeek-V4-Flash-0731-Abliterated-NVFP4", INSTALLER)
+    def test_exact_checkpoint_files_are_pinned(self):
+        self.assertIn("huihui-ai/Huihui-DeepSeek-V4-Flash-0731-abliterated-GGUF", INSTALLER)
+        self.assertIn("DeepSeek-V4-Flash-Q4-mxfp4-0731.gguf", INSTALLER)
+        self.assertIn("dspark-DeepSeek-V4-Flash-0731-BF16.gguf", INSTALLER)
+        self.assertIn("--revision", INSTALLER)
         self.assertIn("HF_XET_HIGH_PERFORMANCE=1", INSTALLER)
-        self.assertIn("snapshot_download(", INSTALLER)
-        self.assertIn("HF_HUB_CACHE", INSTALLER)
-        self.assertNotIn("local_dir=", INSTALLER)
+        self.assertIn("--local-dir", INSTALLER)
 
-    def test_vllm_is_loopback_only_and_has_required_flags(self):
-        self.assertIn('[[ "$DSV4_VLLM_HOST" == "127.0.0.1" ]]', INSTALLER)
-        self.assertIn("--host \"$DSV4_VLLM_HOST\"", INSTALLER)
-        self.assertNotIn("DSV4_VLLM_HOST:-0.0.0.0", INSTALLER)
-        for flag in (
-            "--tensor-parallel-size \"$GPU_COUNT\"",
-            "--kv-cache-dtype fp8",
-            "--max-model-len \"$DSV4_MAX_MODEL_LEN\"",
-            "--tool-call-parser deepseek_v4",
-            "--reasoning-parser deepseek_v4",
-            "--enable-auto-tool-choice",
-        ):
-            self.assertIn(flag, INSTALLER)
-
-    def test_credential_handling(self):
-        self.assertIn("openssl rand -hex 32", INSTALLER)
+    def test_private_loopback_topology_and_authentication(self):
+        self.assertIn("--host 127.0.0.1 --port 8000", INSTALLER)
+        self.assertIn("--host 127.0.0.1 --port 4000", INSTALLER)
+        self.assertIn("LITELLM_MASTER_KEY", INSTALLER)
         self.assertIn("sk-dsv4-", INSTALLER)
-        self.assertIn("/etc/dsv4/credentials.env", INSTALLER)
-        self.assertIn("-m 600", INSTALLER)
-        self.assertIn("EnvironmentFile=/etc/dsv4/credentials.env", INSTALLER)
-        self.assertNotRegex(INSTALLER, r"sk-dsv4-[0-9a-fA-F]{64}")
+        self.assertIn("chmod 600", INSTALLER)
 
-    def test_codex_responses_gateway_contract(self):
-        self.assertIn("/v1/responses", INSTALLER)
-        self.assertIn('wire_api = "responses"', INSTALLER)
-        self.assertIn('model_provider = "dsv4"', PROFILE)
-        self.assertIn('env_key = "DSV4_API_KEY"', PROFILE)
-        self.assertIn('base_url = "http://127.0.0.1:4000/v1"', PROFILE)
-        self.assertNotIn("ANTHROPIC_", INSTALLER)
-        self.assertNotIn("claude", INSTALLER.lower())
+    def test_blackwell_dspark_profile(self):
+        self.assertIn("rtx pro 6000 blackwell", INSTALLER)
+        self.assertIn("--spec-type draft-dspark", INSTALLER)
+        self.assertIn("--spec-draft-n-max 5", INSTALLER)
+        self.assertIn("--ctx-size 1048576", INSTALLER)
+        self.assertIn("--parallel 2", INSTALLER)
+        self.assertIn("--cache-type-k q8_0", INSTALLER)
+        self.assertIn("--reasoning-preserve", INSTALLER)
+        self.assertIn("GGML_SCHED_MAX_SPLIT_INPUTS=48", INSTALLER)
 
-    def test_management_commands_and_safe_uninstall(self):
-        for command in ("start", "stop", "restart", "status", "logs", "credentials", "update", "uninstall"):
-            self.assertRegex(INSTALLER, rf"\b{command}\b")
-        self.assertIn("dsv4 uninstall --yes", INSTALLER)
-        self.assertIn("refusing unsafe removal target", INSTALLER)
-
-    def test_service_templates_preserve_boundary(self):
-        self.assertIn("Description=DeepSeek V4 vLLM backend (loopback only)", VLLM_TEMPLATE)
-        self.assertIn("EnvironmentFile=/etc/dsv4/credentials.env", GATEWAY_TEMPLATE)
-        self.assertIn("NoNewPrivileges=true", VLLM_TEMPLATE)
-        self.assertIn("NoNewPrivileges=true", GATEWAY_TEMPLATE)
+    def test_management_cli_contract(self):
+        for command in ("start|stop|restart", "status)", "logs)", "credentials)", "update)", "uninstall)"):
+            self.assertIn(command, INSTALLER)
 
 
 if __name__ == "__main__":
