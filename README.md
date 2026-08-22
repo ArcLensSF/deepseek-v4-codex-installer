@@ -8,7 +8,7 @@ It serves [`huihui-ai/Huihui-DeepSeek-V4-Flash-0731-abliterated-GGUF`](https://h
 
 - Latest CUDA-enabled `llama.cpp`, built for Blackwell (`SM120`)
 - Layer-split model and DSpark draft decoding across 4× RTX PRO 6000 Blackwell 96 GB GPUs
-- 524,288-token context in one full request slot
+- Two concurrent 524,288-token request slots (1,048,576 tokens total)
 - Flash Attention and llama.cpp's supported 8-bit `q8_0` KV cache
 - Hugging Face Xet with `HF_XET_HIGH_PERFORMANCE=1`; only the two required GGUF files are downloaded
 - A loopback-only llama.cpp backend at `127.0.0.1:8000`

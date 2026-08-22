@@ -222,7 +222,7 @@ RestartSec=5
 TimeoutStartSec=infinity
 TimeoutStopSec=90
 ExecStartPre=-/usr/bin/docker rm -f dsv4-llama
-ExecStart=/usr/bin/docker run --rm --name dsv4-llama --gpus all --network host --env LD_LIBRARY_PATH=/dsv4/bin -v $DSV4_ROOT:/dsv4 $CUDA_IMAGE /dsv4/bin/llama-server --model /dsv4/models/$MODEL_FILE --model-draft /dsv4/models/$DRAFT_FILE --spec-type draft-dspark --spec-draft-n-max 5 --fit off --n-gpu-layers 999 --n-gpu-layers-draft 999 --device CUDA0,CUDA1,CUDA2,CUDA3 --split-mode layer --flash-attn on --ctx-size 524288 --cache-type-k q8_0 --cache-type-v q8_0 --parallel 1 --reasoning-preserve --cont-batching --host 127.0.0.1 --port 8000
+ExecStart=/usr/bin/docker run --rm --name dsv4-llama --gpus all --network host --env LD_LIBRARY_PATH=/dsv4/bin -v $DSV4_ROOT:/dsv4 $CUDA_IMAGE /dsv4/bin/llama-server --model /dsv4/models/$MODEL_FILE --model-draft /dsv4/models/$DRAFT_FILE --spec-type draft-dspark --spec-draft-n-max 5 --fit off --n-gpu-layers 999 --n-gpu-layers-draft 999 --device CUDA0,CUDA1,CUDA2,CUDA3 --split-mode layer --flash-attn on --ctx-size 1048576 --cache-type-k q8_0 --cache-type-v q8_0 --parallel 2 --reasoning-preserve --cont-batching --host 127.0.0.1 --port 8000
 ExecStop=/usr/bin/docker stop -t 60 dsv4-llama
 
 [Install]
