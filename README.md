@@ -25,8 +25,8 @@ This profile requires 4× RTX PRO 6000 Blackwell GPUs (at least 90 GB each) and 
 When a block volume is mounted at `/mnt/dsv4`, it is selected automatically. Otherwise the installer chooses the largest local disk. To force a persistent volume explicitly:
 
 ```bash
-DSV4_ROOT=/mnt/dsv4/dsv4-huihui-gguf \
-curl -fsSL https://raw.githubusercontent.com/ArcLensSF/deepseek-v4-codex-installer/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ArcLensSF/deepseek-v4-codex-installer/main/install.sh | \
+  DSV4_ROOT=/mnt/dsv4/dsv4-huihui-gguf bash
 ```
 
 ## Install
